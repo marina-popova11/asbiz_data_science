@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """Раунд 1. Запрос к модели без обёртки
 
@@ -17,6 +18,7 @@ import httpx
 
 from desk.config import Settings, settings
 
+import time
 SYSTEM = (
     "Отнеси обращение в поддержку платёжного сервиса к одной категории: платежи, "
     "возвраты, доступ, тарифы, интеграция, другое. Ответь одним словом."
@@ -92,9 +94,40 @@ def send(
         raise RuntimeError("шлюз ответил %d: %s" % (resp.status_code, resp.text[:300]))
     return resp.json()
 
+def send_with_retry(
+    cfg: Settings,
+    payload: Dict[str, Any],
+    client: Optional[httpx.Client] = None,
+    attempts: int = 8,
+    base_delay: float = 7.0,
+) -> Dict[str, Any]:
+    """Повторяет запрос при 429 с нарастающей паузой"""
+    last: Optional[RuntimeError] = None
+    for n in range(attempts):
+        try:
+            return send(cfg, payload, client=client)
+        except RuntimeError as e:
+            last = e
+            if "429" not in str(e):
+                raise
+            time.sleep(base_delay * (n + 1))
+    raise last  # type: ignore[misc]
 
 def text_of(resp: Dict[str, Any]) -> str:
     """Текст ответа из всех блоков text"""
+    # parts = []
+    # for b in resp.get("content") or []:
+    #     if b.get("type") != "text":
+    #         continue
+    #     t = b.get("text", "")
+    #     if isinstance(t, str):
+    #         parts.append(t)
+    #     elif isinstance(t, dict):
+    #         # нестандартный формат: берём первое строковое значение
+    #         parts.append(str(next((v for v in t.values() if isinstance(v, str)), "")))
+    #     else:
+    #         parts.append(str(t))
+    # return "".join(parts).strip()
     return "".join(
         b.get("text", "") for b in resp.get("content") or [] if b.get("type") == "text"
     ).strip()
@@ -115,13 +148,13 @@ def main() -> None:
     print(json.dumps(resp, ensure_ascii=False, indent=2))
 
     print("\n2. Ответ, оборванный лимитом max_tokens=2\n")
-    resp = send(cfg, body(cfg, user("Объясни, почему небо голубое."), max_tokens=2))
+    resp = send_with_retry(cfg, body(cfg, user("Объясни, почему небо голубое."), max_tokens=2))
     print("stop_reason: %s, текст: %r" % (resp.get("stop_reason"), text_of(resp)))
 
     print("\n3. Токены русского и английского текста с одним смыслом\n")
     for ru, en in PAIRS:
-        n_ru = send(cfg, body(cfg, user(ru), max_tokens=1))["usage"]["input_tokens"]
-        n_en = send(cfg, body(cfg, user(en), max_tokens=1))["usage"]["input_tokens"]
+        n_ru = send_with_retry(cfg, body(cfg, user(ru), max_tokens=1))["usage"]["input_tokens"]
+        n_en = send_with_retry(cfg, body(cfg, user(en), max_tokens=1))["usage"]["input_tokens"]
         print(
             "по-русски %3d, по-английски %3d, отношение %.2f"
             % (n_ru, n_en, n_ru / max(1, n_en))
@@ -130,10 +163,13 @@ def main() -> None:
     print("\n4. Разброс ответов: пять одинаковых запросов при температуре 0 и 1\n")
     prompt = user("Продолжи фразу одним словом, без точки: «Сегодня погода»")
     for temperature in (0.0, 1.0):
-        answers = [
-            text_of(send(cfg, body(cfg, prompt, max_tokens=8, temperature=temperature)))
-            for _ in range(5)
-        ]
+        answers = []
+        for i in range(5):
+            r = send_with_retry(
+                cfg,
+                body(cfg, prompt, max_tokens=8, temperature=temperature),
+            )
+            answers.append(text_of(r))
         print(
             "температура %.1f: различных ответов %d из 5: %s"
             % (temperature, len(set(answers)), answers)
@@ -141,15 +177,15 @@ def main() -> None:
 
     print("\n5. Сервер не хранит диалог\n")
     first = user("Меня зовут Аня. Запомни это.")
-    resp1 = send(cfg, body(cfg, first, max_tokens=40))
-    alone = send(
+    resp1 = send_with_retry(cfg, body(cfg, first, max_tokens=40))
+    alone = send_with_retry(
         cfg, body(cfg, user("Как меня зовут? Ответь одним словом."), max_tokens=16)
     )
     history = first + [
         {"role": "assistant", "content": text_of(resp1)},
         {"role": "user", "content": "Как меня зовут? Ответь одним словом."},
     ]
-    with_history = send(cfg, body(cfg, history, max_tokens=16))
+    with_history = send_with_retry(cfg, body(cfg, history, max_tokens=16))
     print(
         "без истории: %r, входных токенов %d"
         % (text_of(alone), alone["usage"]["input_tokens"])
@@ -161,7 +197,7 @@ def main() -> None:
 
     print("\n6. Что будет, если модель начнёт рассуждать, а места мало\n")
     thinking = {"thinking": {"type": "enabled", "budget_tokens": 1024}}
-    resp = send(
+    resp = send_with_retry(
         cfg, body(cfg, user(TICKET), system=SYSTEM, max_tokens=16, extra=thinking)
     )
     kinds = [b["type"] for b in resp.get("content") or []]
