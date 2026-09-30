@@ -33,6 +33,7 @@ class Settings:
     auth_scheme: str = "x-api-key"  # или "bearer"
     verify_ssl: bool = True
     timeout_s: float = 60.0
+    rpm: int = 0
     # Цены за миллион токенов, условные
     price_in: float = 0.20
     price_out: float = 0.80
@@ -62,6 +63,7 @@ def settings() -> Settings:
         auth_scheme=env.get("LLM_AUTH_SCHEME", "x-api-key"),
         verify_ssl=env.get("LLM_VERIFY_SSL", "1") not in ("0", "false", "no"),
         timeout_s=float(env.get("LLM_TIMEOUT_S", "60")),
+        rpm=int(env.get("LLM_RPM", "0")),
         price_in=float(env.get("LLM_PRICE_IN", "0.20")),
         price_out=float(env.get("LLM_PRICE_OUT", "0.80")),
         weight_out=float(env.get("LLM_WEIGHT_OUT", "1")),

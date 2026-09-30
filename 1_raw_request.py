@@ -12,11 +12,13 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from desk.config import Settings, settings
+from desk.llm import RateLimit
 
 import time
 SYSTEM = (
@@ -142,19 +144,25 @@ def main() -> None:
     cfg = settings()
     if not cfg.base_url or not cfg.api_key:
         raise SystemExit("впишите LLM_BASE_URL и LLM_API_KEY в .env")
+    limit = RateLimit(cfg.rpm)
+
+    def call(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Отправка с паузой, если у ключа лимит запросов в минуту"""
+        time.sleep(limit.reserve())
+        return send(cfg, payload)
 
     print("1. Обычный запрос: весь ответ как есть\n")
-    resp = send(cfg, body(cfg, user(TICKET), system=SYSTEM, max_tokens=16))
+    resp = call(body(cfg, user(TICKET), system=SYSTEM, max_tokens=16))
     print(json.dumps(resp, ensure_ascii=False, indent=2))
 
     print("\n2. Ответ, оборванный лимитом max_tokens=2\n")
-    resp = send_with_retry(cfg, body(cfg, user("Объясни, почему небо голубое."), max_tokens=2))
+    resp = call(body(cfg, user("Объясни, почему небо голубое."), max_tokens=2))
     print("stop_reason: %s, текст: %r" % (resp.get("stop_reason"), text_of(resp)))
 
     print("\n3. Токены русского и английского текста с одним смыслом\n")
     for ru, en in PAIRS:
-        n_ru = send_with_retry(cfg, body(cfg, user(ru), max_tokens=1))["usage"]["input_tokens"]
-        n_en = send_with_retry(cfg, body(cfg, user(en), max_tokens=1))["usage"]["input_tokens"]
+        n_ru = call(body(cfg, user(ru), max_tokens=1))["usage"]["input_tokens"]
+        n_en = call(body(cfg, user(en), max_tokens=1))["usage"]["input_tokens"]
         print(
             "по-русски %3d, по-английски %3d, отношение %.2f"
             % (n_ru, n_en, n_ru / max(1, n_en))
@@ -163,13 +171,10 @@ def main() -> None:
     print("\n4. Разброс ответов: пять одинаковых запросов при температуре 0 и 1\n")
     prompt = user("Продолжи фразу одним словом, без точки: «Сегодня погода»")
     for temperature in (0.0, 1.0):
-        answers = []
-        for i in range(5):
-            r = send_with_retry(
-                cfg,
-                body(cfg, prompt, max_tokens=8, temperature=temperature),
-            )
-            answers.append(text_of(r))
+        answers = [
+            text_of(call(body(cfg, prompt, max_tokens=8, temperature=temperature)))
+            for _ in range(5)
+        ]
         print(
             "температура %.1f: различных ответов %d из 5: %s"
             % (temperature, len(set(answers)), answers)
@@ -177,15 +182,13 @@ def main() -> None:
 
     print("\n5. Сервер не хранит диалог\n")
     first = user("Меня зовут Аня. Запомни это.")
-    resp1 = send_with_retry(cfg, body(cfg, first, max_tokens=40))
-    alone = send_with_retry(
-        cfg, body(cfg, user("Как меня зовут? Ответь одним словом."), max_tokens=16)
-    )
+    resp1 = call(body(cfg, first, max_tokens=40))
+    alone = call(body(cfg, user("Как меня зовут? Ответь одним словом."), max_tokens=16))
     history = first + [
         {"role": "assistant", "content": text_of(resp1)},
         {"role": "user", "content": "Как меня зовут? Ответь одним словом."},
     ]
-    with_history = send_with_retry(cfg, body(cfg, history, max_tokens=16))
+    with_history = call(body(cfg, history, max_tokens=16))
     print(
         "без истории: %r, входных токенов %d"
         % (text_of(alone), alone["usage"]["input_tokens"])
@@ -197,9 +200,7 @@ def main() -> None:
 
     print("\n6. Что будет, если модель начнёт рассуждать, а места мало\n")
     thinking = {"thinking": {"type": "enabled", "budget_tokens": 1024}}
-    resp = send_with_retry(
-        cfg, body(cfg, user(TICKET), system=SYSTEM, max_tokens=16, extra=thinking)
-    )
+    resp = call(body(cfg, user(TICKET), system=SYSTEM, max_tokens=16, extra=thinking))
     kinds = [b["type"] for b in resp.get("content") or []]
     print(
         "блоки ответа: %s, причина остановки: %s, текст: %r, выходных токенов %d"

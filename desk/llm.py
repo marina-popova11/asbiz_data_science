@@ -13,8 +13,9 @@ import json
 import random
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -27,7 +28,30 @@ if TYPE_CHECKING:
 # После этих кодов запрос повторяем. 529 значит, что провайдер перегружен
 RETRY_STATUS = {408, 429, 500, 502, 503, 504, 529}
 ANTHROPIC_VERSION = "2023-06-01"
+WINDOW_S = 61.0
 _THINK = re.compile(r"<think>.*?</think>", re.S)
+
+
+class RateLimit:
+    """Не даёт отправить больше rpm запросов за минуту"""
+
+    def __init__(self, rpm: int, clock: Callable[[], float] = time.monotonic):
+        self.rpm = rpm
+        self.clock = clock
+        self.sent: Deque[float] = deque()
+
+    def reserve(self) -> float:
+        """Занимает место для запроса и говорит, сколько секунд ждать до отправки"""
+        if self.rpm <= 0:
+            return 0.0
+        now = self.clock()
+        while self.sent and self.sent[0] <= now - WINDOW_S:
+            self.sent.popleft()
+        at = now
+        if len(self.sent) >= self.rpm:
+            at = max(now, self.sent[-self.rpm] + WINDOW_S)
+        self.sent.append(at)
+        return at - now
 
 
 class LLMError(Exception):
@@ -185,6 +209,7 @@ class LLM:
         async_transport: Optional[httpx.AsyncBaseTransport] = None,
         sleep: Callable[[float], None] = time.sleep,
         cache: bool = True,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self.cfg = cfg or load_settings()
         if not self.cfg.base_url:
@@ -193,6 +218,7 @@ class LLM:
         self.sleep = sleep
         self.cache = cache and self.cfg.cache_dir is not None
         self.ledger: List[Usage] = []
+        self.limit = RateLimit(self.cfg.rpm, clock)
         headers = {
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
@@ -330,6 +356,9 @@ class LLM:
         self, path: str, body: Dict[str, Any]
     ) -> Tuple[Optional[int], Optional[BaseException], Optional[httpx.Response]]:
         """Отправка запроса. Возвращает код ответа, ошибку сети и сам ответ"""
+        wait = self.limit.reserve()
+        if wait:
+            self.sleep(wait)
         try:
             resp = self._client.post(path, json=body)
             return resp.status_code, None, resp
@@ -340,6 +369,11 @@ class LLM:
         self, path: str, body: Dict[str, Any]
     ) -> Tuple[Optional[int], Optional[BaseException], Optional[httpx.Response]]:
         """То же, что _post, но асинхронно"""
+        import asyncio
+
+        wait = self.limit.reserve()
+        if wait:
+            await asyncio.sleep(wait)
         try:
             resp = await self._async_client().post(path, json=body)
             return resp.status_code, None, resp
@@ -437,9 +471,13 @@ class LLM:
         from .stream import collect, iter_sse
 
         body = self.payload(messages, stream=True, **kw)
-        started = time.perf_counter()
         attempt = 0
         while True:
+            wait = self.limit.reserve()
+            if wait:
+                await asyncio.sleep(wait)
+            if attempt == 0:
+                started = time.perf_counter()
             status, exc, resp = None, None, None
             try:
                 async with self._async_client().stream(

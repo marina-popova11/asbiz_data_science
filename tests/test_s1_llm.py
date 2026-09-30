@@ -6,8 +6,8 @@ import httpx
 import pytest
 
 from desk.config import Settings
-from desk.llm import (LLM, LLMError, LLMUnavailable, backoff_delay, cache_key, retry_after,
-                      should_retry, split_system, tool_result)
+from desk.llm import (LLM, LLMError, LLMUnavailable, RateLimit, backoff_delay, cache_key,
+                      retry_after, should_retry, split_system, tool_result)
 
 OK = {"type": "message", "role": "assistant", "model": "deepseek-flash",
       "content": [{"type": "text", "text": "платежи"}], "stop_reason": "end_turn",
@@ -323,3 +323,24 @@ def test_async_client_survives_several_event_loops():
     client_one = llm._aclient
     second = asyncio.run(llm.achat([{"role": "user", "content": "два"}]))
     assert first.text == second.text == "платежи" and llm._aclient is not client_one
+
+
+def test_rate_limit_waits_when_the_minute_is_full():
+    clock = {"now": 0.0}
+    limit = RateLimit(2, clock=lambda: clock["now"])
+    assert limit.reserve() == 0 and limit.reserve() == 0
+    assert limit.reserve() == pytest.approx(61)
+    clock["now"] = 30.0
+    assert limit.reserve() == pytest.approx(31)
+    assert RateLimit(0).reserve() == 0
+
+
+def test_client_paces_requests_by_rpm():
+    cfg = Settings("https://gw.example", "key", "deepseek-flash", rpm=1)
+    sleeps = []
+    llm = LLM(cfg, transport=httpx.MockTransport(lambda r: httpx.Response(200, json=OK)),
+              sleep=sleeps.append, clock=lambda: 0.0)
+    llm.chat([{"role": "user", "content": "раз"}])
+    llm.chat([{"role": "user", "content": "два"}])
+    assert sleeps == [pytest.approx(61)]
+
