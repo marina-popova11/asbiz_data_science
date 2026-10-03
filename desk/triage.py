@@ -105,10 +105,18 @@ def build_messages(text: str, variant: str = "base") -> List[Dict[str, str]]:
 
     variant="no_examples" убирает примеры, чтобы измерить их вклад
     """
-    # TODO С2: system, затем примеры парами user/assistant, затем само обращение в тегах
-    raise NotImplementedError(
-        "семинар 2: system, затем примеры парами user/assistant, затем само обращение в тегах"
-    )
+    messages: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM}]
+    if variant != "no_examples":
+        for example_text, example_answer in EXAMPLES:
+            messages.append({"role": "user", "content": wrap(example_text)})
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": json.dumps(example_answer, ensure_ascii=False),
+                }
+            )
+    messages.append({"role": "user", "content": wrap(text)})
+    return messages
 
 
 def triage(llm: Any, text: str, variant: str = "base", **kw: Any) -> Ticket:
@@ -132,10 +140,20 @@ async def atriage_many(
     Ответы идут в порядке обращений, а на месте обращения, которое не прошло
     проверку, лежит исключение
     """
-    # TODO С2: asyncio.Semaphore(concurrency) вокруг astructured; gather с return_exceptions=True
-    raise NotImplementedError(
-        "семинар 2: asyncio.Semaphore(concurrency) вокруг astructured; gather с return_exceptions=True"
-    )
+    gate = asyncio.Semaphore(concurrency)
+
+    async def one(text: str) -> Ticket:
+        async with gate:
+            ticket, _ = await astructured(
+                llm,
+                build_messages(text, variant),
+                Ticket,
+                context={"source": text},
+                max_tokens=400,
+            )
+            return ticket
+
+    return list(await asyncio.gather(*(one(t) for t in texts), return_exceptions=True))
 
 
 def main() -> None:

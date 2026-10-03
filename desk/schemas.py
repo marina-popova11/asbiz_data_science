@@ -49,19 +49,32 @@ class Ticket(BaseModel):
         cls, ids: List[str], info: ValidationInfo
     ) -> List[str]:
         """Номера подходят под шаблон, есть в тексте, и из текста взяты все"""
-        # TODO С2: номера подходят под PAYMENT_ID, есть в тексте, и из текста взяты все
-        raise NotImplementedError(
-            "семинар 2: номера подходят под PAYMENT_ID, есть в тексте, и из текста взяты все"
-        )
+        source = (info.context or {}).get("source", "")
+        # Все номера подходят под шаблон P-XXXXX
+        for pid in ids:
+            if not PAYMENT_ID.match(pid):
+                raise ValueError("идентификатор %s не похож на шаблон P-XXXXX" % pid)
+            if source is not None  and pid not in source:
+                raise ValueError("номер %s не найден в обращении" % pid)
+            if pid not in ids:
+                raise ValueError("в обращении есть номер %s, добавь его" % pid)
+
+        found_in_text = re.findall(r"P-\d{5}", source)
+        if sorted(ids) != sorted(found_in_text):
+            raise ValueError(
+                "номера не совпадают с текстом: в тексте %s, в ответе %s"
+                % (found_in_text, ids)
+            )
+        return ids
 
     @field_validator("quote")
     @classmethod
     def quote_is_verbatim(cls, quote: str, info: ValidationInfo) -> str:
         """Цитата дословно есть в обращении"""
-        # TODO С2: цитата обязана быть подстрокой обращения (без учёта регистра и пробелов)
-        raise NotImplementedError(
-            "семинар 2: цитата обязана быть подстрокой обращения (без учёта регистра и пробелов)"
-        )
+        source = (info.context or {}).get("source", "")
+        if _norm(quote) not in _norm(source):
+            raise ValueError("цитата не найдена в обращении")
+        return quote
 
 
 def describe(schema: Type[BaseModel]) -> str:

@@ -51,6 +51,7 @@ def test_schema_accepts_good_answer():
     {"category": "VIP"}, {"severity": 6}, {"severity": 0}, {"amount": -5},
     {"payment_ids": ["88121"]}, {"payment_ids": ["P-88121", "P-00000"]},
     {"quote": "клиент недоволен сервисом"}, {"quote": ""}, {"payment_ids": []},
+    {"payment_ids": ["P-88121", "P-88121"]},
 ])
 def test_schema_rejects(changes):
     with pytest.raises(ValidationError):

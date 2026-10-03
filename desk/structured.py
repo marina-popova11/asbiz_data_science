@@ -28,10 +28,31 @@ class StructuredError(Exception):
 
 def extract_json(text: str) -> Dict[str, Any]:
     """Первый объект JSON в тексте, даже если вокруг него слова или ограда ```"""
-    # TODO С2: найдите первую «{» и парную ей «}», не считая скобки внутри строк
-    raise NotImplementedError(
-        "семинар 2: найдите первую «{» и парную ей «}», не считая скобки внутри строк"
-    )
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("нет объекта JSON")
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return json.loads(text[start : i + 1])
+    raise ValueError("нет объекта JSON")
 
 
 def format_errors(err: Exception) -> str:
@@ -64,10 +85,20 @@ def structured(
 
     Если за max_attempts попыток ответ не прошёл проверку, бросает StructuredError
     """
-    # TODO С2: цикл: вызов модели, разбор, проверка; при ошибке допишите в историю ответ модели и жалобу
-    raise NotImplementedError(
-        "семинар 2: цикл: вызов модели, разбор, проверка; при ошибке допишите в историю ответ модели и жалобу"
-    )
+    history = list(messages)
+    err: Exception = ValueError("не было ни одной попытки")
+    text = ""
+    for attempt in range(1, max_attempts + 1):
+        text = llm.chat(history, **kw).text
+        try:
+            return schema.model_validate(extract_json(text), context=context), attempt
+        except (ValueError, ValidationError) as e:
+            err = e
+            history += [
+                {"role": "assistant", "content": text},
+                {"role": "user", "content": _complaint(e)},
+            ]
+    raise StructuredError(max_attempts, format_errors(err), text)
 
 
 async def astructured(
