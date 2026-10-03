@@ -54,7 +54,6 @@ def extract_json(text: str) -> Dict[str, Any]:
                     return json.loads(text[start : i + 1])
     raise ValueError("нет объекта JSON")
 
-
 def format_errors(err: Exception) -> str:
     """Ошибки проверки одной строкой: поле и причина"""
     if isinstance(err, ValidationError):
